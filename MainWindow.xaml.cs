@@ -341,6 +341,16 @@ public partial class MainWindow : Window
 
             if (!result.IsUpdateAvailable)
             {
+                if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
+                {
+                    if (manualCheck)
+                    {
+                        SetStatus(result.ErrorMessage);
+                    }
+
+                    return;
+                }
+
                 if (manualCheck)
                 {
                     SetStatus($"Up to date. Current {result.CurrentVersion}, latest {result.LatestVersion}.");

@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Net;
 using System.Reflection;
 using System.Text.Json;
 
@@ -33,15 +34,45 @@ public sealed class GitHubUpdateService
         var endpoint = $"https://api.github.com/repos/{normalizedRepository}/releases/latest";
 
         using var response = await _httpClient.GetAsync(endpoint, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        if (response.IsSuccessStatusCode)
         {
-            var reason = $"GitHub returned {(int)response.StatusCode} {response.ReasonPhrase}.";
-            return UpdateCheckResult.Failed(reason);
+            return await BuildResultFromReleaseResponseAsync(
+                response,
+                normalizedRepository,
+                currentVersion,
+                cancellationToken);
         }
 
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            var fallbackTag = await TryGetLatestTagAsync(normalizedRepository, cancellationToken);
+            if (string.IsNullOrWhiteSpace(fallbackTag))
+            {
+                return UpdateCheckResult.NoPublishedVersions(currentVersion);
+            }
+
+            var isUpdateAvailableFromTag = IsNewerThanCurrent(fallbackTag, currentVersion);
+            return new UpdateCheckResult(
+                IsSuccess: true,
+                IsUpdateAvailable: isUpdateAvailableFromTag,
+                CurrentVersion: currentVersion,
+                LatestVersion: fallbackTag,
+                ReleaseUrl: $"https://github.com/{normalizedRepository}/tags",
+                ErrorMessage: string.Empty);
+        }
+
+        var reason = $"GitHub returned {(int)response.StatusCode} {response.ReasonPhrase}.";
+        return UpdateCheckResult.Failed(reason);
+    }
+
+    private static async Task<UpdateCheckResult> BuildResultFromReleaseResponseAsync(
+        HttpResponseMessage response,
+        string normalizedRepository,
+        string currentVersion,
+        CancellationToken cancellationToken)
+    {
         using var contentStream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var document = await JsonDocument.ParseAsync(contentStream, cancellationToken: cancellationToken);
-
         var root = document.RootElement;
         var latestTag = root.TryGetProperty("tag_name", out var tagElement)
             ? tagElement.GetString() ?? string.Empty
@@ -63,6 +94,28 @@ public sealed class GitHubUpdateService
             LatestVersion: latestTag,
             ReleaseUrl: releaseUrl,
             ErrorMessage: string.Empty);
+    }
+
+    private async Task<string> TryGetLatestTagAsync(string normalizedRepository, CancellationToken cancellationToken)
+    {
+        var tagsEndpoint = $"https://api.github.com/repos/{normalizedRepository}/tags?per_page=1";
+        using var tagsResponse = await _httpClient.GetAsync(tagsEndpoint, cancellationToken);
+        if (!tagsResponse.IsSuccessStatusCode)
+        {
+            return string.Empty;
+        }
+
+        using var tagsStream = await tagsResponse.Content.ReadAsStreamAsync(cancellationToken);
+        using var tagsDocument = await JsonDocument.ParseAsync(tagsStream, cancellationToken: cancellationToken);
+        if (tagsDocument.RootElement.ValueKind != JsonValueKind.Array || tagsDocument.RootElement.GetArrayLength() == 0)
+        {
+            return string.Empty;
+        }
+
+        var firstTag = tagsDocument.RootElement[0];
+        return firstTag.TryGetProperty("name", out var nameElement)
+            ? nameElement.GetString() ?? string.Empty
+            : string.Empty;
     }
 
     private static string NormalizeRepository(string? repositoryInput)
@@ -154,4 +207,13 @@ public readonly record struct UpdateCheckResult(
             LatestVersion: string.Empty,
             ReleaseUrl: string.Empty,
             ErrorMessage: message);
+
+    public static UpdateCheckResult NoPublishedVersions(string currentVersion) =>
+        new(
+            IsSuccess: true,
+            IsUpdateAvailable: false,
+            CurrentVersion: currentVersion,
+            LatestVersion: currentVersion,
+            ReleaseUrl: string.Empty,
+            ErrorMessage: "No GitHub releases or tags published yet.");
 }
