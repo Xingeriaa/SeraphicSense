@@ -54,7 +54,7 @@ public partial class MainWindow : Window
             StartMonitoring();
         }
 
-        if (_config.CheckUpdatesOnLaunch && !string.IsNullOrWhiteSpace(_config.GitHubRepository))
+        if (_config.CheckUpdatesOnLaunch)
         {
             await CheckForUpdatesAsync(manualCheck: false);
         }
@@ -242,7 +242,7 @@ public partial class MainWindow : Window
             StartMinimized = StartMinimizedCheckBox.IsChecked == true,
             AutoStartMonitoring = AutoStartMonitoringCheckBox.IsChecked == true,
             CheckUpdatesOnLaunch = CheckUpdatesOnLaunchCheckBox.IsChecked == true,
-            GitHubRepository = GitHubRepositoryTextBox.Text.Trim()
+            GitHubRepository = AppConstants.FixedGitHubRepositoryUrl
         };
     }
 
@@ -254,7 +254,7 @@ public partial class MainWindow : Window
         RequiredExtensionsTextBox.Text = string.Join(", ", config.RequiredExtensions);
         ForbiddenBaseNameTextBox.Text = config.ForbiddenBaseName;
         ValidationDelayTextBox.Text = config.ValidationDelayMs.ToString();
-        GitHubRepositoryTextBox.Text = config.GitHubRepository;
+        GitHubRepositoryTextBox.Text = AppConstants.FixedGitHubRepositoryUrl;
         StartWithWindowsCheckBox.IsChecked = config.StartWithWindows;
         StartMinimizedCheckBox.IsChecked = config.StartMinimized;
         AutoStartMonitoringCheckBox.IsChecked = config.AutoStartMonitoring;
@@ -328,20 +328,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_config.GitHubRepository))
-        {
-            if (manualCheck)
-            {
-                SetStatus("Set GitHub Repository first (owner/repo).");
-            }
-
-            return;
-        }
-
         try
         {
             SetStatus("Checking GitHub releases...");
-            var result = await _updateService.CheckForUpdateAsync(_config.GitHubRepository);
+            var result = await _updateService.CheckForUpdateAsync(AppConstants.FixedGitHubRepositoryUrl);
 
             if (!result.IsSuccess)
             {

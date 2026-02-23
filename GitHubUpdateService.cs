@@ -23,10 +23,10 @@ public sealed class GitHubUpdateService
 
     public async Task<UpdateCheckResult> CheckForUpdateAsync(string repository, CancellationToken cancellationToken = default)
     {
-        var normalizedRepository = repository?.Trim() ?? string.Empty;
-        if (!IsValidRepository(normalizedRepository))
+        var normalizedRepository = NormalizeRepository(repository);
+        if (string.IsNullOrWhiteSpace(normalizedRepository))
         {
-            return UpdateCheckResult.Failed("GitHub repository must be in owner/repo format.");
+            return UpdateCheckResult.Failed("GitHub repository must be owner/repo or a GitHub repository URL.");
         }
 
         var currentVersion = GetCurrentVersion();
@@ -65,10 +65,42 @@ public sealed class GitHubUpdateService
             ErrorMessage: string.Empty);
     }
 
-    private static bool IsValidRepository(string repository)
+    private static string NormalizeRepository(string? repositoryInput)
     {
-        var parts = repository.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        return parts.Length == 2 && parts.All(part => !string.IsNullOrWhiteSpace(part));
+        var input = (repositoryInput ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return string.Empty;
+        }
+
+        if (Uri.TryCreate(input, UriKind.Absolute, out var uri))
+        {
+            if (!string.Equals(uri.Host, "github.com", StringComparison.OrdinalIgnoreCase))
+            {
+                return string.Empty;
+            }
+
+            var path = uri.AbsolutePath.Trim('/');
+            if (path.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+            {
+                path = path[..^4];
+            }
+
+            var uriParts = path.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            return uriParts.Length >= 2
+                ? $"{uriParts[0]}/{uriParts[1]}"
+                : string.Empty;
+        }
+
+        if (input.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+        {
+            input = input[..^4];
+        }
+
+        var parts = input.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return parts.Length == 2 && parts.All(part => !string.IsNullOrWhiteSpace(part))
+            ? $"{parts[0]}/{parts[1]}"
+            : string.Empty;
     }
 
     private static string GetCurrentVersion()

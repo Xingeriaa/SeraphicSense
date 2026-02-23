@@ -122,13 +122,15 @@
                    Grid.Column="0"
                    VerticalAlignment="Center"
                    Margin="0,0,8,0"
-                   Text="GitHub Repository" />
+                   Text="GitHub Repository (Fixed)" />
         <TextBox x:Name="GitHubRepositoryTextBox"
                  Grid.Row="12"
                  Grid.Column="1"
                  Grid.ColumnSpan="2"
+                 IsReadOnly="True"
+                 IsTabStop="False"
                  VerticalContentAlignment="Center"
-                 ToolTip="owner/repo (for update checks)" />
+                 ToolTip="This repository is fixed in code." />
 
         <WrapPanel Grid.Row="14"
                    Grid.Column="0"

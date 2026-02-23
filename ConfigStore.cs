@@ -80,7 +80,7 @@ public sealed class ConfigStore
 
         config.ValidationDelayMs = config.ValidationDelayMs <= 0 ? 2000 : Math.Clamp(config.ValidationDelayMs, 1, 60_000);
 
-        config.GitHubRepository = (config.GitHubRepository ?? string.Empty).Trim();
+        config.GitHubRepository = AppConstants.FixedGitHubRepositoryUrl;
 
         config.RequiredExtensions = (config.RequiredExtensions ?? [])
             .Select(extension => extension.Trim().TrimStart('.'))
