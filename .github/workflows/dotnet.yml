@@ -26,7 +26,7 @@ jobs:
           cache: true
 
       - name: Restore
-        run: dotnet restore SeraphicSense.csproj
+        run: dotnet restore --use-lock-file
 
       - name: Build
         run: dotnet build SeraphicSense.csproj -c Release --no-restore
