@@ -2,6 +2,7 @@ using System.Net.Http;
 using System.Net;
 using System.Reflection;
 using System.Text.Json;
+using System.IO;
 
 namespace SeraphicSense;
 
@@ -38,7 +39,6 @@ public sealed class GitHubUpdateService
         {
             return await BuildResultFromReleaseResponseAsync(
                 response,
-                normalizedRepository,
                 currentVersion,
                 cancellationToken);
         }
@@ -58,6 +58,8 @@ public sealed class GitHubUpdateService
                 CurrentVersion: currentVersion,
                 LatestVersion: fallbackTag,
                 ReleaseUrl: $"https://github.com/{normalizedRepository}/tags",
+                InstallerDownloadUrl: string.Empty,
+                InstallerFileName: string.Empty,
                 ErrorMessage: string.Empty);
         }
 
@@ -67,7 +69,6 @@ public sealed class GitHubUpdateService
 
     private static async Task<UpdateCheckResult> BuildResultFromReleaseResponseAsync(
         HttpResponseMessage response,
-        string normalizedRepository,
         string currentVersion,
         CancellationToken cancellationToken)
     {
@@ -80,6 +81,7 @@ public sealed class GitHubUpdateService
         var releaseUrl = root.TryGetProperty("html_url", out var urlElement)
             ? urlElement.GetString() ?? string.Empty
             : string.Empty;
+        var installerAsset = FindInstallerAsset(root);
 
         if (string.IsNullOrWhiteSpace(latestTag))
         {
@@ -93,7 +95,72 @@ public sealed class GitHubUpdateService
             CurrentVersion: currentVersion,
             LatestVersion: latestTag,
             ReleaseUrl: releaseUrl,
+            InstallerDownloadUrl: installerAsset.DownloadUrl,
+            InstallerFileName: installerAsset.FileName,
             ErrorMessage: string.Empty);
+    }
+
+    private static (string DownloadUrl, string FileName) FindInstallerAsset(JsonElement releaseRoot)
+    {
+        if (!releaseRoot.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
+        {
+            return (string.Empty, string.Empty);
+        }
+
+        var bestScore = int.MaxValue;
+        var bestUrl = string.Empty;
+        var bestFileName = string.Empty;
+
+        foreach (var asset in assets.EnumerateArray())
+        {
+            var name = asset.TryGetProperty("name", out var nameElement)
+                ? nameElement.GetString() ?? string.Empty
+                : string.Empty;
+            var url = asset.TryGetProperty("browser_download_url", out var urlElement)
+                ? urlElement.GetString() ?? string.Empty
+                : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url))
+            {
+                continue;
+            }
+
+            var ext = Path.GetExtension(name).ToLowerInvariant();
+            if (ext is not ".exe" and not ".msi")
+            {
+                continue;
+            }
+
+            var score = ComputeInstallerScore(name, ext);
+            if (score >= bestScore)
+            {
+                continue;
+            }
+
+            bestScore = score;
+            bestUrl = url;
+            bestFileName = name;
+        }
+
+        return (bestUrl, bestFileName);
+    }
+
+    private static int ComputeInstallerScore(string fileName, string extension)
+    {
+        var normalized = fileName.ToLowerInvariant();
+        var score = extension == ".exe" ? 10 : 20;
+
+        if (normalized.Contains("setup") || normalized.Contains("installer"))
+        {
+            score -= 5;
+        }
+
+        if (normalized.Contains("portable") || normalized.Contains("debug"))
+        {
+            score += 10;
+        }
+
+        return score;
     }
 
     private async Task<string> TryGetLatestTagAsync(string normalizedRepository, CancellationToken cancellationToken)
@@ -197,6 +264,8 @@ public readonly record struct UpdateCheckResult(
     string CurrentVersion,
     string LatestVersion,
     string ReleaseUrl,
+    string InstallerDownloadUrl,
+    string InstallerFileName,
     string ErrorMessage)
 {
     public static UpdateCheckResult Failed(string message) =>
@@ -206,6 +275,8 @@ public readonly record struct UpdateCheckResult(
             CurrentVersion: string.Empty,
             LatestVersion: string.Empty,
             ReleaseUrl: string.Empty,
+            InstallerDownloadUrl: string.Empty,
+            InstallerFileName: string.Empty,
             ErrorMessage: message);
 
     public static UpdateCheckResult NoPublishedVersions(string currentVersion) =>
@@ -215,5 +286,7 @@ public readonly record struct UpdateCheckResult(
             CurrentVersion: currentVersion,
             LatestVersion: currentVersion,
             ReleaseUrl: string.Empty,
+            InstallerDownloadUrl: string.Empty,
+            InstallerFileName: string.Empty,
             ErrorMessage: "No GitHub releases or tags published yet.");
 }

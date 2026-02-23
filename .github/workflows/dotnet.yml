@@ -123,6 +123,8 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=admin
+CloseApplications=yes
+RestartApplications=no
 OutputDir=.
 OutputBaseFilename=SeraphicSense-Setup
 

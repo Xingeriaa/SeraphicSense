@@ -11,6 +11,7 @@ public partial class MainWindow : Window
     private readonly FolderGuardianService _guardianService;
     private readonly StartupManager _startupManager;
     private readonly GitHubUpdateService _updateService;
+    private readonly UpdateInstallerService _updateInstallerService;
     private readonly Forms.NotifyIcon _trayIcon;
     private readonly Forms.ToolStripMenuItem _trayStartStopItem;
     private readonly System.Drawing.Icon? _customTrayIcon;
@@ -28,6 +29,7 @@ public partial class MainWindow : Window
         _guardianService = new FolderGuardianService();
         _startupManager = new StartupManager();
         _updateService = new GitHubUpdateService();
+        _updateInstallerService = new UpdateInstallerService();
 
         _guardianService.StatusChanged += OnStatusChanged;
 
@@ -364,20 +366,30 @@ public partial class MainWindow : Window
             _trayIcon.BalloonTipText = $"New version {result.LatestVersion} available.";
             _trayIcon.ShowBalloonTip(3000);
 
-            var shouldOpen = manualCheck || IsVisible;
-            if (shouldOpen && !string.IsNullOrWhiteSpace(result.ReleaseUrl))
+            var installResult = await _updateInstallerService.InstallUpdateAsync(result);
+            if (!installResult.IsSuccess)
             {
-                var response = System.Windows.MessageBox.Show(
-                    $"Version {result.LatestVersion} is available. Open release page?",
-                    "Update Available",
-                    MessageBoxButton.YesNo,
-                    MessageBoxImage.Information);
-
-                if (response == MessageBoxResult.Yes)
+                SetStatus(installResult.Message);
+                if (manualCheck && !string.IsNullOrWhiteSpace(result.ReleaseUrl))
                 {
-                    OpenReleaseUrl(result.ReleaseUrl);
+                    var response = System.Windows.MessageBox.Show(
+                        $"{installResult.Message}\n\nOpen release page instead?",
+                        "Update Install Failed",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+
+                    if (response == MessageBoxResult.Yes)
+                    {
+                        OpenReleaseUrl(result.ReleaseUrl);
+                    }
                 }
+
+                return;
             }
+
+            SetStatus(installResult.Message);
+            _exitRequested = true;
+            Close();
         }
         catch (Exception ex)
         {
