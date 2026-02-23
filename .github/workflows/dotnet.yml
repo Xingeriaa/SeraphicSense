@@ -23,7 +23,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_VERSION }}
-          cache: true
 
       - name: Restore
         run: dotnet restore --use-lock-file
@@ -73,11 +72,25 @@ jobs:
       - name: Build installer exe
         if: github.event_name != 'pull_request'
         shell: pwsh
-        run: >
-          ./installer/build-installer.ps1
-          -PublishDir "artifacts/publish/win-x64"
-          -OutputDir "artifacts/installer"
-          -Version "${{ steps.version.outputs.app_version }}"
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $iscc = "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+          }
+          if (-not (Test-Path $iscc)) {
+            throw "ISCC.exe not found after installation."
+          }
+
+          New-Item -ItemType Directory -Path "artifacts/installer" -Force | Out-Null
+          $publishDir = (Resolve-Path "artifacts/publish/win-x64").Path
+          $outputDir = (Resolve-Path "artifacts/installer").Path
+
+          & $iscc `
+            "/DPublishDir=$publishDir" `
+            "/DAppVersion=${{ steps.version.outputs.app_version }}" `
+            "/O$outputDir" `
+            "/FSeraphicSense-Setup" `
+            "installer\SeraphicSense.iss"
 
       - name: Upload installer artifact
         if: github.event_name != 'pull_request'
