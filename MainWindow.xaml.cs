@@ -30,12 +30,12 @@ public partial class MainWindow : Window
 
         _guardianService.StatusChanged += OnStatusChanged;
 
+        _trayStartStopItem = new Forms.ToolStripMenuItem("Start Monitoring");
+        _trayIcon = BuildTrayIcon();
+
         _config = _configStore.Load();
         _config.StartWithWindows = _startupManager.IsEnabled(_startupValueName);
         ApplyConfigToInputs(_config);
-
-        _trayStartStopItem = new Forms.ToolStripMenuItem("Start Monitoring");
-        _trayIcon = BuildTrayIcon();
 
         Loaded += OnWindowLoaded;
         StateChanged += OnWindowStateChanged;
@@ -295,7 +295,10 @@ public partial class MainWindow : Window
         ObservedBrowseButton.IsEnabled = !isRunning;
         SourceBrowseButton.IsEnabled = !isRunning;
         StartStopButton.Content = isRunning ? "Stop Monitoring" : "Start Monitoring";
-        _trayStartStopItem.Text = isRunning ? "Stop Monitoring" : "Start Monitoring";
+        if (_trayStartStopItem is not null)
+        {
+            _trayStartStopItem.Text = isRunning ? "Stop Monitoring" : "Start Monitoring";
+        }
     }
 
     private async Task CheckForUpdatesAsync(bool manualCheck)
