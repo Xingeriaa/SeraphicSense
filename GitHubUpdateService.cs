@@ -6,15 +6,19 @@ namespace SeraphicSense;
 
 public sealed class GitHubUpdateService
 {
+    private static readonly HttpClient SharedHttpClient = CreateSharedClient();
     private readonly HttpClient _httpClient;
 
     public GitHubUpdateService(HttpClient? httpClient = null)
     {
-        _httpClient = httpClient ?? new HttpClient();
-        if (_httpClient.DefaultRequestHeaders.UserAgent.Count == 0)
-        {
-            _httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("SeraphicSenseUpdater/1.0");
-        }
+        _httpClient = httpClient ?? SharedHttpClient;
+    }
+
+    private static HttpClient CreateSharedClient()
+    {
+        var client = new HttpClient();
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("SeraphicSenseUpdater/1.0");
+        return client;
     }
 
     public async Task<UpdateCheckResult> CheckForUpdateAsync(string repository, CancellationToken cancellationToken = default)

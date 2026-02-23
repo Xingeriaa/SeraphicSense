@@ -13,6 +13,7 @@ public partial class MainWindow : Window
     private readonly GitHubUpdateService _updateService;
     private readonly Forms.NotifyIcon _trayIcon;
     private readonly Forms.ToolStripMenuItem _trayStartStopItem;
+    private readonly System.Drawing.Icon? _customTrayIcon;
     private readonly string _startupValueName = AppPaths.AppFolderName;
 
     private GuardianConfig _config;
@@ -31,6 +32,7 @@ public partial class MainWindow : Window
         _guardianService.StatusChanged += OnStatusChanged;
 
         _trayStartStopItem = new Forms.ToolStripMenuItem("Start Monitoring");
+        _customTrayIcon = TryLoadCustomTrayIcon();
         _trayIcon = BuildTrayIcon();
 
         _config = _configStore.Load();
@@ -79,7 +81,7 @@ public partial class MainWindow : Window
 
         var icon = new Forms.NotifyIcon
         {
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = _customTrayIcon ?? System.Drawing.SystemIcons.Application,
             Visible = true,
             Text = "SeraphicSense",
             ContextMenuStrip = contextMenu
@@ -92,6 +94,24 @@ public partial class MainWindow : Window
         icon.DoubleClick += (_, _) => OpenFromTray();
 
         return icon;
+    }
+
+    private static System.Drawing.Icon? TryLoadCustomTrayIcon()
+    {
+        try
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, "assets", "app.ico");
+            if (!File.Exists(iconPath))
+            {
+                return null;
+            }
+
+            return new System.Drawing.Icon(iconPath);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static void OpenReleaseUrl(string releaseUrl)
@@ -460,5 +480,6 @@ public partial class MainWindow : Window
         _guardianService.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        _customTrayIcon?.Dispose();
     }
 }

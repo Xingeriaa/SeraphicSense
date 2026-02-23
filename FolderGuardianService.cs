@@ -9,7 +9,7 @@ public sealed class FolderGuardianService : IDisposable
     private readonly SemaphoreSlim _validationLock = new(1, 1);
 
     private FileSystemWatcher? _watcher;
-    private CancellationTokenSource? _delayCancellation;
+    private System.Threading.Timer? _validationTimer;
     private GuardianConfig? _config;
 
     public bool IsRunning { get; private set; }
@@ -62,9 +62,11 @@ public sealed class FolderGuardianService : IDisposable
         _watcher.Renamed += OnFolderRenamed;
         _watcher.EnableRaisingEvents = true;
 
+        _validationTimer = new System.Threading.Timer(OnValidationTimerTick, null, Timeout.Infinite, Timeout.Infinite);
+
         IsRunning = true;
         PublishStatus($"Monitoring started: {_config.ObservedFolderPath}");
-        _ = ScheduleValidationAsync();
+        ScheduleValidation();
     }
 
     public void Stop()
@@ -78,9 +80,9 @@ public sealed class FolderGuardianService : IDisposable
 
         lock (_sync)
         {
-            _delayCancellation?.Cancel();
-            _delayCancellation?.Dispose();
-            _delayCancellation = null;
+            _validationTimer?.Change(Timeout.Infinite, Timeout.Infinite);
+            _validationTimer?.Dispose();
+            _validationTimer = null;
         }
 
         if (_watcher is not null)
@@ -153,45 +155,33 @@ public sealed class FolderGuardianService : IDisposable
         }
     }
 
-    private async Task ScheduleValidationAsync()
+    private void ScheduleValidation()
     {
         if (!IsRunning)
         {
             return;
         }
 
-        CancellationTokenSource pendingDelay;
-
         lock (_sync)
         {
-            var oldDelay = _delayCancellation;
-            oldDelay?.Cancel();
-            oldDelay?.Dispose();
-
-            _delayCancellation = new CancellationTokenSource();
-            pendingDelay = _delayCancellation;
-        }
-
-        try
-        {
             var delayMs = _config?.ValidationDelayMs > 0 ? _config.ValidationDelayMs : 2000;
-            await Task.Delay(delayMs, pendingDelay.Token);
-            await ValidateAndHealAsync(pendingDelay.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            // Another event arrived before the delay elapsed.
+            _validationTimer?.Change(delayMs, Timeout.Infinite);
         }
     }
 
     private void OnFolderChanged(object sender, FileSystemEventArgs e)
     {
-        _ = ScheduleValidationAsync();
+        ScheduleValidation();
     }
 
     private void OnFolderRenamed(object sender, RenamedEventArgs e)
     {
-        _ = ScheduleValidationAsync();
+        ScheduleValidation();
+    }
+
+    private void OnValidationTimerTick(object? state)
+    {
+        _ = ValidateAndHealAsync();
     }
 
     private static async Task CopyWithRetryAsync(string sourcePath, string destinationPath, CancellationToken cancellationToken)
