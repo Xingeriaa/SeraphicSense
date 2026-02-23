@@ -182,14 +182,18 @@ public partial class MainWindow : Window
             throw new InvalidOperationException("Forbidden Base Name is required.");
         }
 
-        if (!int.TryParse(ValidationDelayTextBox.Text.Trim(), out var validationDelayMs))
+        var delayText = ValidationDelayTextBox.Text.Trim();
+        var hasDelay = !string.IsNullOrWhiteSpace(delayText);
+        var validationDelayMs = 2000;
+
+        if (hasDelay && !int.TryParse(delayText, out validationDelayMs))
         {
             throw new InvalidOperationException("Validation Delay (ms) must be a whole number.");
         }
 
         if (validationDelayMs <= 0)
         {
-            validationDelayMs = 500;
+            validationDelayMs = 2000;
         }
 
         validationDelayMs = Math.Clamp(validationDelayMs, 1, 60_000);

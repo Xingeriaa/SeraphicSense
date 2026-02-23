@@ -78,7 +78,7 @@ public sealed class ConfigStore
             config.ForbiddenBaseName,
             "VNGLogo-WindowsClient");
 
-        config.ValidationDelayMs = config.ValidationDelayMs <= 0 ? 500 : Math.Clamp(config.ValidationDelayMs, 1, 60_000);
+        config.ValidationDelayMs = config.ValidationDelayMs <= 0 ? 2000 : Math.Clamp(config.ValidationDelayMs, 1, 60_000);
 
         config.GitHubRepository = (config.GitHubRepository ?? string.Empty).Trim();
 

@@ -1,28 +1,87 @@
-# This workflow will build a .NET project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-net
-
-name: .NET
+name: dotnet-windows
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  DOTNET_VERSION: 9.0.x
+  RUNTIME_ID: win-x64
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: 8.0.x
-    - name: Restore dependencies
-      run: dotnet restore
-    - name: Build
-      run: dotnet build --no-restore
-    - name: Test
-      run: dotnet test --no-build --verbosity normal
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+          cache: true
+
+      - name: Restore
+        run: dotnet restore SeraphicSense.csproj
+
+      - name: Build
+        run: dotnet build SeraphicSense.csproj -c Release --no-restore
+
+      - name: Publish self-contained win-x64
+        run: >
+          dotnet publish SeraphicSense.csproj
+          -c Release
+          -r ${{ env.RUNTIME_ID }}
+          --self-contained true
+          /p:PublishSingleFile=true
+          /p:IncludeNativeLibrariesForSelfExtract=true
+          /p:EnableCompressionInSingleFile=true
+          /p:DebugType=None
+          /p:DebugSymbols=false
+          -o artifacts/publish/win-x64
+
+      - name: Compute version
+        id: version
+        shell: pwsh
+        run: |
+          $version = "1.0.${{ github.run_number }}"
+          if ("${{ github.ref_type }}" -eq "tag" -and "${{ github.ref_name }}") {
+            $version = "${{ github.ref_name }}".TrimStart("v")
+          }
+          "app_version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Archive portable app
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "artifacts/publish/win-x64/*" -DestinationPath "artifacts/SeraphicSense-win-x64.zip" -Force
+
+      - name: Upload portable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeraphicSense-win-x64
+          path: artifacts/SeraphicSense-win-x64.zip
+
+      - name: Install Inno Setup
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer exe
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: >
+          ./installer/build-installer.ps1
+          -PublishDir "artifacts/publish/win-x64"
+          -OutputDir "artifacts/installer"
+          -Version "${{ steps.version.outputs.app_version }}"
+
+      - name: Upload installer artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: SeraphicSense-Setup
+          path: artifacts/installer/SeraphicSense-Setup.exe

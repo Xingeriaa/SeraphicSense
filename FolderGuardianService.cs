@@ -174,7 +174,7 @@ public sealed class FolderGuardianService : IDisposable
 
         try
         {
-            var delayMs = _config?.ValidationDelayMs > 0 ? _config.ValidationDelayMs : 500;
+            var delayMs = _config?.ValidationDelayMs > 0 ? _config.ValidationDelayMs : 2000;
             await Task.Delay(delayMs, pendingDelay.Token);
             await ValidateAndHealAsync(pendingDelay.Token);
         }
@@ -255,7 +255,7 @@ public sealed class FolderGuardianService : IDisposable
             RequiredBaseName = config.RequiredBaseName.Trim(),
             RequiredExtensions = config.RequiredExtensions.ToArray(),
             ForbiddenBaseName = config.ForbiddenBaseName.Trim(),
-            ValidationDelayMs = config.ValidationDelayMs > 0 ? config.ValidationDelayMs : 500,
+            ValidationDelayMs = config.ValidationDelayMs > 0 ? config.ValidationDelayMs : 2000,
             StartWithWindows = config.StartWithWindows,
             StartMinimized = config.StartMinimized,
             AutoStartMonitoring = config.AutoStartMonitoring,
