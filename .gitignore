@@ -2,9 +2,7 @@ bin/
 obj/
 .vs/
 artifacts/
-installer/*
-!installer/
-!installer/SeraphicSense.iss
+installer/
 *.user
 *.suo
 *.cache
