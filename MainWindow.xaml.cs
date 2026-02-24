@@ -10,16 +10,22 @@ public partial class MainWindow : Window
     private readonly ConfigStore _configStore;
     private readonly FolderGuardianService _guardianService;
     private readonly StartupManager _startupManager;
-    private readonly GitHubUpdateService _updateService;
-    private readonly UpdateInstallerService _updateInstallerService;
     private readonly Forms.NotifyIcon _trayIcon;
     private readonly Forms.ToolStripMenuItem _trayStartStopItem;
     private readonly System.Drawing.Icon? _customTrayIcon;
     private readonly string _startupValueName = AppPaths.AppFolderName;
 
     private GuardianConfig _config;
+    private GitHubUpdateService? _updateService;
+    private UpdateInstallerService? _updateInstallerService;
+    private DataUpdateService? _dataUpdateService;
     private bool _exitRequested;
     private bool _didInitialTrayHint;
+    private bool _isShuttingDown;
+
+    private GitHubUpdateService UpdateService => _updateService ??= new GitHubUpdateService();
+    private UpdateInstallerService UpdateInstallerService => _updateInstallerService ??= new UpdateInstallerService();
+    private DataUpdateService DataUpdateService => _dataUpdateService ??= new DataUpdateService();
 
     public MainWindow()
     {
@@ -28,8 +34,6 @@ public partial class MainWindow : Window
         _configStore = new ConfigStore();
         _guardianService = new FolderGuardianService();
         _startupManager = new StartupManager();
-        _updateService = new GitHubUpdateService();
-        _updateInstallerService = new UpdateInstallerService();
 
         _guardianService.StatusChanged += OnStatusChanged;
 
@@ -39,7 +43,6 @@ public partial class MainWindow : Window
 
         _config = _configStore.Load();
         _config.StartWithWindows = _startupManager.IsEnabled(_startupValueName);
-        ApplyConfigToInputs(_config);
 
         Loaded += OnWindowLoaded;
         StateChanged += OnWindowStateChanged;
@@ -51,6 +54,8 @@ public partial class MainWindow : Window
 
     private async void OnWindowLoaded(object sender, RoutedEventArgs e)
     {
+        ApplyConfigToInputs(_config);
+
         if (_config.AutoStartMonitoring)
         {
             StartMonitoring();
@@ -244,7 +249,8 @@ public partial class MainWindow : Window
             StartMinimized = StartMinimizedCheckBox.IsChecked == true,
             AutoStartMonitoring = AutoStartMonitoringCheckBox.IsChecked == true,
             CheckUpdatesOnLaunch = CheckUpdatesOnLaunchCheckBox.IsChecked == true,
-            GitHubRepository = AppConstants.FixedGitHubRepositoryUrl
+            GitHubRepository = AppConstants.FixedGitHubRepositoryUrl,
+            LastAppliedDataReleaseTag = _config.LastAppliedDataReleaseTag
         };
     }
 
@@ -266,6 +272,11 @@ public partial class MainWindow : Window
 
     private bool SaveSettingsFromInputs()
     {
+        if (_isShuttingDown)
+        {
+            return false;
+        }
+
         try
         {
             _config = BuildConfigFromInputs();
@@ -283,6 +294,11 @@ public partial class MainWindow : Window
 
     private void StartMonitoring()
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
         try
         {
             if (!SaveSettingsFromInputs())
@@ -302,21 +318,67 @@ public partial class MainWindow : Window
 
     private void StopMonitoring()
     {
+        if (_isShuttingDown && !_guardianService.IsRunning)
+        {
+            return;
+        }
+
         _guardianService.Stop();
         ToggleInputState(isRunning: false);
     }
 
     private void ToggleInputState(bool isRunning)
     {
-        ObservedFolderTextBox.IsEnabled = !isRunning;
-        SourceFolderTextBox.IsEnabled = !isRunning;
-        RequiredBaseNameTextBox.IsEnabled = !isRunning;
-        RequiredExtensionsTextBox.IsEnabled = !isRunning;
-        ForbiddenBaseNameTextBox.IsEnabled = !isRunning;
-        ValidationDelayTextBox.IsEnabled = !isRunning;
-        ObservedBrowseButton.IsEnabled = !isRunning;
-        SourceBrowseButton.IsEnabled = !isRunning;
-        StartStopButton.Content = isRunning ? "Stop Monitoring" : "Start Monitoring";
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
+        if (ObservedFolderTextBox is not null)
+        {
+            ObservedFolderTextBox.IsEnabled = !isRunning;
+        }
+
+        if (SourceFolderTextBox is not null)
+        {
+            SourceFolderTextBox.IsEnabled = !isRunning;
+        }
+
+        if (RequiredBaseNameTextBox is not null)
+        {
+            RequiredBaseNameTextBox.IsEnabled = !isRunning;
+        }
+
+        if (RequiredExtensionsTextBox is not null)
+        {
+            RequiredExtensionsTextBox.IsEnabled = !isRunning;
+        }
+
+        if (ForbiddenBaseNameTextBox is not null)
+        {
+            ForbiddenBaseNameTextBox.IsEnabled = !isRunning;
+        }
+
+        if (ValidationDelayTextBox is not null)
+        {
+            ValidationDelayTextBox.IsEnabled = !isRunning;
+        }
+
+        if (ObservedBrowseButton is not null)
+        {
+            ObservedBrowseButton.IsEnabled = !isRunning;
+        }
+
+        if (SourceBrowseButton is not null)
+        {
+            SourceBrowseButton.IsEnabled = !isRunning;
+        }
+
+        if (StartStopButton is not null)
+        {
+            StartStopButton.Content = isRunning ? "Stop Monitoring" : "Start Monitoring";
+        }
+
         if (_trayStartStopItem is not null)
         {
             _trayStartStopItem.Text = isRunning ? "Stop Monitoring" : "Start Monitoring";
@@ -325,6 +387,11 @@ public partial class MainWindow : Window
 
     private async Task CheckForUpdatesAsync(bool manualCheck)
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
         if (!SaveSettingsFromInputs())
         {
             return;
@@ -333,7 +400,7 @@ public partial class MainWindow : Window
         try
         {
             SetStatus("Checking GitHub releases...");
-            var result = await _updateService.CheckForUpdateAsync(AppConstants.FixedGitHubRepositoryUrl);
+            var result = await UpdateService.CheckForUpdateAsync(AppConstants.FixedGitHubRepositoryUrl);
 
             if (!result.IsSuccess)
             {
@@ -361,12 +428,60 @@ public partial class MainWindow : Window
                 return;
             }
 
-            SetStatus($"Update available: {result.LatestVersion} (current {result.CurrentVersion}).");
+            if (result.UpdateKind == UpdateKind.DataOnly)
+            {
+                if (string.Equals(
+                        _config.LastAppliedDataReleaseTag,
+                        result.LatestVersion,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    if (manualCheck)
+                    {
+                        SetStatus($"Data files are already up to date for release {result.LatestVersion}.");
+                    }
+
+                    return;
+                }
+
+                SetStatus($"Data update available: {result.LatestVersion}. Downloading data files...");
+                _trayIcon.BalloonTipTitle = "SeraphicSense Data Update";
+                _trayIcon.BalloonTipText = $"Applying data update {result.LatestVersion}.";
+                _trayIcon.ShowBalloonTip(3000);
+
+                var dataResult = await DataUpdateService.InstallDataUpdateAsync(result, _config);
+                if (!dataResult.IsSuccess)
+                {
+                    SetStatus(dataResult.Message);
+                    if (manualCheck && !string.IsNullOrWhiteSpace(result.ReleaseUrl))
+                    {
+                        var response = System.Windows.MessageBox.Show(
+                            $"{dataResult.Message}\n\nOpen release page instead?",
+                            "Data Update Failed",
+                            MessageBoxButton.YesNo,
+                            MessageBoxImage.Warning);
+
+                        if (response == MessageBoxResult.Yes)
+                        {
+                            OpenReleaseUrl(result.ReleaseUrl);
+                        }
+                    }
+
+                    return;
+                }
+
+                _config.LastAppliedDataReleaseTag = result.LatestVersion;
+                _configStore.Save(_config);
+                SetStatus(dataResult.Message);
+                _ = _guardianService.ValidateAndHealAsync();
+                return;
+            }
+
+            SetStatus($"Application update available: {result.LatestVersion} (current {result.CurrentVersion}).");
             _trayIcon.BalloonTipTitle = "SeraphicSense Update";
-            _trayIcon.BalloonTipText = $"New version {result.LatestVersion} available.";
+            _trayIcon.BalloonTipText = $"New app version {result.LatestVersion} available.";
             _trayIcon.ShowBalloonTip(3000);
 
-            var installResult = await _updateInstallerService.InstallUpdateAsync(result);
+            var installResult = await UpdateInstallerService.InstallUpdateAsync(result);
             if (!installResult.IsSuccess)
             {
                 SetStatus(installResult.Message);
@@ -399,11 +514,21 @@ public partial class MainWindow : Window
 
     private void OnStatusChanged(string message)
     {
+        if (_isShuttingDown || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
         _ = Dispatcher.InvokeAsync(() => SetStatus(message));
     }
 
     private void SetStatus(string message)
     {
+        if (_isShuttingDown || StatusTextBlock is null)
+        {
+            return;
+        }
+
         StatusTextBlock.Text = message.StartsWith('[')
             ? message
             : $"[{DateTime.Now:HH:mm:ss}] {message}";
@@ -421,6 +546,7 @@ public partial class MainWindow : Window
     {
         if (_exitRequested)
         {
+            _isShuttingDown = true;
             return;
         }
 
@@ -430,6 +556,11 @@ public partial class MainWindow : Window
 
     private void HideToTray(bool showHint)
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
         ShowInTaskbar = false;
         Hide();
         WindowState = WindowState.Normal;
@@ -447,8 +578,18 @@ public partial class MainWindow : Window
 
     private void OpenFromTray()
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
         _ = Dispatcher.InvokeAsync(() =>
         {
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
             Show();
             ShowInTaskbar = true;
             Activate();
@@ -458,10 +599,30 @@ public partial class MainWindow : Window
         });
     }
 
+    public void ShowFromExternalActivation()
+    {
+        if (_exitRequested)
+        {
+            return;
+        }
+
+        OpenFromTray();
+    }
+
     private void ToggleMonitoringFromTray()
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
         _ = Dispatcher.InvokeAsync(() =>
         {
+            if (_isShuttingDown)
+            {
+                return;
+            }
+
             if (_guardianService.IsRunning)
             {
                 StopMonitoring();
@@ -475,6 +636,11 @@ public partial class MainWindow : Window
 
     private void CheckForUpdatesFromTray()
     {
+        if (_isShuttingDown)
+        {
+            return;
+        }
+
         _ = Dispatcher.InvokeAsync(async () => await CheckForUpdatesAsync(manualCheck: true));
     }
 
@@ -483,15 +649,27 @@ public partial class MainWindow : Window
         _ = Dispatcher.InvokeAsync(() =>
         {
             _exitRequested = true;
+            _isShuttingDown = true;
             Close();
         });
     }
 
     private void OnWindowClosed(object? sender, EventArgs e)
     {
+        _isShuttingDown = true;
+        _guardianService.StatusChanged -= OnStatusChanged;
         _guardianService.Dispose();
-        _trayIcon.Visible = false;
-        _trayIcon.Dispose();
+
+        try
+        {
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+        }
+        catch
+        {
+            // Suppress native tray cleanup failures during shutdown.
+        }
+
         _customTrayIcon?.Dispose();
     }
 }

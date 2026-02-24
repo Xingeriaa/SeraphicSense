@@ -7,16 +7,21 @@ public sealed class FolderGuardianService : IDisposable
 {
     private readonly object _sync = new();
     private readonly SemaphoreSlim _validationLock = new(1, 1);
+    private int _pendingValidation;
 
     private FileSystemWatcher? _watcher;
     private System.Threading.Timer? _validationTimer;
+    private CancellationTokenSource? _lifetimeCts;
     private GuardianConfig? _config;
+    private bool _isDisposed;
 
     public bool IsRunning { get; private set; }
     public event Action<string>? StatusChanged;
 
     public void Start(GuardianConfig config)
     {
+        ThrowIfDisposed();
+
         if (IsRunning)
         {
             return;
@@ -50,6 +55,7 @@ public sealed class FolderGuardianService : IDisposable
         }
 
         _config = CloneConfig(config);
+        _lifetimeCts = new CancellationTokenSource();
 
         _watcher = new FileSystemWatcher(_config.ObservedFolderPath)
         {
@@ -63,6 +69,7 @@ public sealed class FolderGuardianService : IDisposable
         _watcher.EnableRaisingEvents = true;
 
         _validationTimer = new System.Threading.Timer(OnValidationTimerTick, null, Timeout.Infinite, Timeout.Infinite);
+        _pendingValidation = 0;
 
         IsRunning = true;
         PublishStatus($"Monitoring started: {_config.ObservedFolderPath}");
@@ -77,12 +84,25 @@ public sealed class FolderGuardianService : IDisposable
         }
 
         IsRunning = false;
+        _pendingValidation = 0;
+        _lifetimeCts?.Cancel();
 
         lock (_sync)
         {
-            _validationTimer?.Change(Timeout.Infinite, Timeout.Infinite);
-            _validationTimer?.Dispose();
-            _validationTimer = null;
+            if (_validationTimer is not null)
+            {
+                try
+                {
+                    _validationTimer.Change(Timeout.Infinite, Timeout.Infinite);
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Timer may already be disposed during shutdown race.
+                }
+
+                _validationTimer.Dispose();
+                _validationTimer = null;
+            }
         }
 
         if (_watcher is not null)
@@ -95,23 +115,41 @@ public sealed class FolderGuardianService : IDisposable
             _watcher = null;
         }
 
+        _lifetimeCts?.Dispose();
+        _lifetimeCts = null;
         PublishStatus("Monitoring stopped.");
     }
 
     public async Task ValidateAndHealAsync(CancellationToken cancellationToken = default)
     {
-        if (!IsRunning || _config is null)
+        if (_isDisposed || !IsRunning || _config is null)
         {
             return;
         }
 
-        await _validationLock.WaitAsync(cancellationToken);
-
+        CancellationToken effectiveToken;
         try
         {
+            effectiveToken = _lifetimeCts?.Token ?? cancellationToken;
+        }
+        catch (ObjectDisposedException)
+        {
+            return;
+        }
+
+        var lockAcquired = false;
+        try
+        {
+            lockAcquired = await _validationLock.WaitAsync(0, effectiveToken);
+            if (!lockAcquired)
+            {
+                Interlocked.Exchange(ref _pendingValidation, 1);
+                return;
+            }
+
             foreach (var extension in _config.RequiredExtensions)
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                effectiveToken.ThrowIfCancellationRequested();
 
                 var requiredFileName = $"{_config.RequiredBaseName}.{extension}";
                 var destinationPath = Path.Combine(_config.ObservedFolderPath, requiredFileName);
@@ -128,16 +166,16 @@ public sealed class FolderGuardianService : IDisposable
                     continue;
                 }
 
-                await CopyWithRetryAsync(sourcePath, destinationPath, cancellationToken);
+                await CopyWithRetryAsync(sourcePath, destinationPath, effectiveToken);
                 PublishStatus($"Restored {requiredFileName}");
             }
 
             var forbiddenPattern = $"{_config.ForbiddenBaseName}*";
             foreach (var forbiddenPath in Directory.EnumerateFiles(_config.ObservedFolderPath, forbiddenPattern))
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                effectiveToken.ThrowIfCancellationRequested();
 
-                await DeleteWithRetryAsync(forbiddenPath, cancellationToken);
+                await DeleteWithRetryAsync(forbiddenPath, effectiveToken);
                 PublishStatus($"Deleted {Path.GetFileName(forbiddenPath)}");
             }
         }
@@ -151,7 +189,22 @@ public sealed class FolderGuardianService : IDisposable
         }
         finally
         {
-            _validationLock.Release();
+            if (lockAcquired)
+            {
+                try
+                {
+                    _validationLock.Release();
+                }
+                catch (ObjectDisposedException)
+                {
+                    // Expected only when service is tearing down.
+                }
+            }
+
+            if (!_isDisposed && IsRunning && Interlocked.Exchange(ref _pendingValidation, 0) == 1)
+            {
+                ScheduleValidation();
+            }
         }
     }
 
@@ -181,6 +234,11 @@ public sealed class FolderGuardianService : IDisposable
 
     private void OnValidationTimerTick(object? state)
     {
+        if (_isDisposed || !IsRunning)
+        {
+            return;
+        }
+
         _ = ValidateAndHealAsync();
     }
 
@@ -250,7 +308,8 @@ public sealed class FolderGuardianService : IDisposable
             StartMinimized = config.StartMinimized,
             AutoStartMonitoring = config.AutoStartMonitoring,
             CheckUpdatesOnLaunch = config.CheckUpdatesOnLaunch,
-            GitHubRepository = config.GitHubRepository
+            GitHubRepository = config.GitHubRepository,
+            LastAppliedDataReleaseTag = config.LastAppliedDataReleaseTag
         };
     }
 
@@ -261,7 +320,18 @@ public sealed class FolderGuardianService : IDisposable
 
     public void Dispose()
     {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
         Stop();
         _validationLock.Dispose();
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
     }
 }
