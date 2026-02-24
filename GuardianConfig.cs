@@ -14,4 +14,5 @@ public sealed class GuardianConfig
     public bool AutoStartMonitoring { get; set; } = true;
     public bool CheckUpdatesOnLaunch { get; set; } = true;
     public string GitHubRepository { get; set; } = AppConstants.FixedGitHubRepositoryUrl;
+    public string LastAppliedDataReleaseTag { get; set; } = string.Empty;
 }

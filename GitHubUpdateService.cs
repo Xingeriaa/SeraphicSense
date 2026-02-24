@@ -1,8 +1,8 @@
-using System.Net.Http;
+using System.IO;
 using System.Net;
+using System.Net.Http;
 using System.Reflection;
 using System.Text.Json;
-using System.IO;
 
 namespace SeraphicSense;
 
@@ -37,10 +37,7 @@ public sealed class GitHubUpdateService
         using var response = await _httpClient.GetAsync(endpoint, cancellationToken);
         if (response.IsSuccessStatusCode)
         {
-            return await BuildResultFromReleaseResponseAsync(
-                response,
-                currentVersion,
-                cancellationToken);
+            return await BuildResultFromReleaseResponseAsync(response, currentVersion, cancellationToken);
         }
 
         if (response.StatusCode == HttpStatusCode.NotFound)
@@ -51,15 +48,17 @@ public sealed class GitHubUpdateService
                 return UpdateCheckResult.NoPublishedVersions(currentVersion);
             }
 
-            var isUpdateAvailableFromTag = IsNewerThanCurrent(fallbackTag, currentVersion);
+            var isUpdateAvailableFromTag = IsNewerThanCurrent(fallbackTag, currentVersion, out _);
             return new UpdateCheckResult(
                 IsSuccess: true,
                 IsUpdateAvailable: isUpdateAvailableFromTag,
+                UpdateKind: isUpdateAvailableFromTag ? UpdateKind.Application : UpdateKind.None,
                 CurrentVersion: currentVersion,
                 LatestVersion: fallbackTag,
                 ReleaseUrl: $"https://github.com/{normalizedRepository}/tags",
                 InstallerDownloadUrl: string.Empty,
                 InstallerFileName: string.Empty,
+                DataAssets: Array.Empty<UpdateDataAsset>(),
                 ErrorMessage: string.Empty);
         }
 
@@ -81,36 +80,108 @@ public sealed class GitHubUpdateService
         var releaseUrl = root.TryGetProperty("html_url", out var urlElement)
             ? urlElement.GetString() ?? string.Empty
             : string.Empty;
-        var installerAsset = FindInstallerAsset(root);
+        var releaseBody = root.TryGetProperty("body", out var bodyElement)
+            ? bodyElement.GetString() ?? string.Empty
+            : string.Empty;
 
         if (string.IsNullOrWhiteSpace(latestTag))
         {
             return UpdateCheckResult.Failed("Latest release has no tag_name.");
         }
 
-        var isUpdateAvailable = IsNewerThanCurrent(latestTag, currentVersion);
+        var releaseAssets = ParseAssets(root);
+        var installerAsset = FindInstallerAsset(releaseAssets);
+        var dataAssets = FindDataAssets(releaseAssets);
+
+        var isVersionNew = IsNewerThanCurrent(latestTag, currentVersion, out var comparableVersions);
+        var hasInstaller = !string.IsNullOrWhiteSpace(installerAsset.DownloadUrl);
+        var hasDataAssets = dataAssets.Count > 0;
+
+        var updateKind = DetermineUpdateKind(
+            isVersionNew,
+            comparableVersions,
+            hasInstaller,
+            hasDataAssets,
+            releaseBody);
+
         return new UpdateCheckResult(
             IsSuccess: true,
-            IsUpdateAvailable: isUpdateAvailable,
+            IsUpdateAvailable: updateKind != UpdateKind.None,
+            UpdateKind: updateKind,
             CurrentVersion: currentVersion,
             LatestVersion: latestTag,
             ReleaseUrl: releaseUrl,
             InstallerDownloadUrl: installerAsset.DownloadUrl,
             InstallerFileName: installerAsset.FileName,
+            DataAssets: dataAssets,
             ErrorMessage: string.Empty);
     }
 
-    private static (string DownloadUrl, string FileName) FindInstallerAsset(JsonElement releaseRoot)
+    private static UpdateKind DetermineUpdateKind(
+        bool isVersionNew,
+        bool comparableVersions,
+        bool hasInstaller,
+        bool hasDataAssets,
+        string releaseBody)
+    {
+        var explicitKind = ParseExplicitUpdateKind(releaseBody);
+        if (explicitKind == UpdateKind.DataOnly && hasDataAssets)
+        {
+            return UpdateKind.DataOnly;
+        }
+
+        if (explicitKind == UpdateKind.Application && (hasInstaller || isVersionNew || !comparableVersions))
+        {
+            return UpdateKind.Application;
+        }
+
+        if (hasInstaller && (isVersionNew || !comparableVersions))
+        {
+            return UpdateKind.Application;
+        }
+
+        if (hasDataAssets)
+        {
+            return UpdateKind.DataOnly;
+        }
+
+        if (isVersionNew)
+        {
+            return UpdateKind.Application;
+        }
+
+        return UpdateKind.None;
+    }
+
+    private static UpdateKind ParseExplicitUpdateKind(string releaseBody)
+    {
+        var body = (releaseBody ?? string.Empty).ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return UpdateKind.None;
+        }
+
+        if (body.Contains("[update-type:data]") || body.Contains("update-type: data"))
+        {
+            return UpdateKind.DataOnly;
+        }
+
+        if (body.Contains("[update-type:app]") || body.Contains("update-type: app"))
+        {
+            return UpdateKind.Application;
+        }
+
+        return UpdateKind.None;
+    }
+
+    private static IReadOnlyList<UpdateDataAsset> ParseAssets(JsonElement releaseRoot)
     {
         if (!releaseRoot.TryGetProperty("assets", out var assets) || assets.ValueKind != JsonValueKind.Array)
         {
-            return (string.Empty, string.Empty);
+            return Array.Empty<UpdateDataAsset>();
         }
 
-        var bestScore = int.MaxValue;
-        var bestUrl = string.Empty;
-        var bestFileName = string.Empty;
-
+        var parsed = new List<UpdateDataAsset>();
         foreach (var asset in assets.EnumerateArray())
         {
             var name = asset.TryGetProperty("name", out var nameElement)
@@ -125,24 +196,53 @@ public sealed class GitHubUpdateService
                 continue;
             }
 
-            var ext = Path.GetExtension(name).ToLowerInvariant();
+            parsed.Add(new UpdateDataAsset(name, url));
+        }
+
+        return parsed;
+    }
+
+    private static UpdateDataAsset FindInstallerAsset(IReadOnlyList<UpdateDataAsset> assets)
+    {
+        var bestScore = int.MaxValue;
+        var best = default(UpdateDataAsset);
+
+        foreach (var asset in assets)
+        {
+            var ext = Path.GetExtension(asset.FileName).ToLowerInvariant();
             if (ext is not ".exe" and not ".msi")
             {
                 continue;
             }
 
-            var score = ComputeInstallerScore(name, ext);
+            var score = ComputeInstallerScore(asset.FileName, ext);
             if (score >= bestScore)
             {
                 continue;
             }
 
             bestScore = score;
-            bestUrl = url;
-            bestFileName = name;
+            best = asset;
         }
 
-        return (bestUrl, bestFileName);
+        return best;
+    }
+
+    private static IReadOnlyList<UpdateDataAsset> FindDataAssets(IReadOnlyList<UpdateDataAsset> assets)
+    {
+        var archiveCandidate = assets
+            .Where(asset => IsDataArchiveAsset(asset.FileName))
+            .OrderBy(asset => ComputeDataArchiveScore(asset.FileName))
+            .FirstOrDefault();
+
+        if (!string.IsNullOrWhiteSpace(archiveCandidate.DownloadUrl))
+        {
+            return [archiveCandidate];
+        }
+
+        return assets
+            .Where(asset => IsDirectDataFileAsset(asset.FileName))
+            .ToArray();
     }
 
     private static int ComputeInstallerScore(string fileName, string extension)
@@ -161,6 +261,49 @@ public sealed class GitHubUpdateService
         }
 
         return score;
+    }
+
+    private static bool IsDataArchiveAsset(string fileName)
+    {
+        var normalized = fileName.ToLowerInvariant();
+        if (Path.GetExtension(normalized) != ".zip")
+        {
+            return false;
+        }
+
+        return normalized.Contains("data")
+               || normalized.Contains("backup")
+               || normalized.Contains("pak")
+               || normalized.Contains("maturedata");
+    }
+
+    private static int ComputeDataArchiveScore(string fileName)
+    {
+        var normalized = fileName.ToLowerInvariant();
+        var score = 100;
+
+        if (normalized.Contains("backuppaks"))
+        {
+            score -= 40;
+        }
+
+        if (normalized.Contains("maturedata"))
+        {
+            score -= 20;
+        }
+
+        if (normalized.Contains("data"))
+        {
+            score -= 10;
+        }
+
+        return score;
+    }
+
+    private static bool IsDirectDataFileAsset(string fileName)
+    {
+        var ext = Path.GetExtension(fileName).ToLowerInvariant();
+        return ext is ".pak" or ".sig" or ".ucas" or ".utoc";
     }
 
     private async Task<string> TryGetLatestTagAsync(string normalizedRepository, CancellationToken cancellationToken)
@@ -229,20 +372,26 @@ public sealed class GitHubUpdateService
         return version is null ? "0.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
-    private static bool IsNewerThanCurrent(string latestTag, string currentVersion)
+    private static bool IsNewerThanCurrent(string latestTag, string currentVersion, out bool comparableVersions)
     {
-        var normalizedLatest = NormalizeVersionText(latestTag);
-        var normalizedCurrent = NormalizeVersionText(currentVersion);
+        var latestParsed = TryParseComparableVersion(latestTag, out var latestVersion);
+        var currentParsed = TryParseComparableVersion(currentVersion, out var currentVersionValue);
+        comparableVersions = latestParsed && currentParsed;
 
-        var latestParsed = Version.TryParse(normalizedLatest, out var latestVersion);
-        var currentParsed = Version.TryParse(normalizedCurrent, out var current);
-
-        if (latestParsed && currentParsed)
+        if (!comparableVersions)
         {
-            return latestVersion! > current!;
+            return false;
         }
 
-        return !string.Equals(latestTag, currentVersion, StringComparison.OrdinalIgnoreCase);
+        return latestVersion > currentVersionValue;
+    }
+
+    private static bool TryParseComparableVersion(string rawVersion, out Version parsedVersion)
+    {
+        var normalized = NormalizeVersionText(rawVersion);
+        var parsed = Version.TryParse(normalized, out var value);
+        parsedVersion = value ?? new Version(0, 0);
+        return parsed;
     }
 
     private static string NormalizeVersionText(string rawVersion)
@@ -258,35 +407,50 @@ public sealed class GitHubUpdateService
     }
 }
 
+public enum UpdateKind
+{
+    None = 0,
+    Application = 1,
+    DataOnly = 2
+}
+
+public readonly record struct UpdateDataAsset(string FileName, string DownloadUrl);
+
 public readonly record struct UpdateCheckResult(
     bool IsSuccess,
     bool IsUpdateAvailable,
+    UpdateKind UpdateKind,
     string CurrentVersion,
     string LatestVersion,
     string ReleaseUrl,
     string InstallerDownloadUrl,
     string InstallerFileName,
+    IReadOnlyList<UpdateDataAsset> DataAssets,
     string ErrorMessage)
 {
     public static UpdateCheckResult Failed(string message) =>
         new(
             IsSuccess: false,
             IsUpdateAvailable: false,
+            UpdateKind: UpdateKind.None,
             CurrentVersion: string.Empty,
             LatestVersion: string.Empty,
             ReleaseUrl: string.Empty,
             InstallerDownloadUrl: string.Empty,
             InstallerFileName: string.Empty,
+            DataAssets: Array.Empty<UpdateDataAsset>(),
             ErrorMessage: message);
 
     public static UpdateCheckResult NoPublishedVersions(string currentVersion) =>
         new(
             IsSuccess: true,
             IsUpdateAvailable: false,
+            UpdateKind: UpdateKind.None,
             CurrentVersion: currentVersion,
             LatestVersion: currentVersion,
             ReleaseUrl: string.Empty,
             InstallerDownloadUrl: string.Empty,
             InstallerFileName: string.Empty,
+            DataAssets: Array.Empty<UpdateDataAsset>(),
             ErrorMessage: "No GitHub releases or tags published yet.");
 }

@@ -30,6 +30,11 @@ public sealed class UpdateInstallerService
             return UpdateInstallResult.Failed("No update available.");
         }
 
+        if (update.UpdateKind != UpdateKind.Application)
+        {
+            return UpdateInstallResult.Failed("Latest release is not an application installer update.");
+        }
+
         if (string.IsNullOrWhiteSpace(update.InstallerDownloadUrl))
         {
             return UpdateInstallResult.Failed("Update found, but no installer asset was attached to the release.");
